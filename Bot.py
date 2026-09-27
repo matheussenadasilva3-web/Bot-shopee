@@ -1,0 +1,143 @@
+import hashlib
+import time
+import json
+import requests
+
+# CONFIGURAÇÕES DE ACESSO
+SHOPEE_APP_ID = "18394421004"
+SHOPEE_SECRET = "5WFVEDV3NWTC6SU7UQVRIGEY7DJMRRM7"
+TELEGRAM_TOKEN = "8848483776:AAEGvK92Ejw6RAY0GluqqHMKpiBfPVDOjGw"
+TELEGRAM_CHANNEL = "@achadinhoshoppeoficialbr"
+
+# Tempo entre postagens (120 segundos = 2 minutos)
+TEMPO_ESPERA = 120 
+
+# Memória expandida para até 5000 produtos sem repetir
+produtos_postados = set()
+
+def gerar_assinatura(body_str, timestamp):
+    factor = f"{SHOPEE_APP_ID}{timestamp}{body_str}{SHOPEE_SECRET}"
+    return hashlib.sha256(factor.encode('utf-8')).hexdigest()
+
+def buscar_ofertas_shopee(pagina=1):
+    url = "https://open-api.affiliate.shopee.com.br/graphql"
+    timestamp = int(time.time())
+    
+    query = f"""
+    query {{
+        productOfferV2(page: {pagina}, limit: 50) {{
+            nodes {{
+                itemId
+                productName
+                price
+                offerLink
+                imageUrl
+            }}
+        }}
+    }}
+    """
+    
+    payload = json.dumps({"query": query})
+    signature = gerar_assinatura(payload, timestamp)
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"SHA256 Credential={SHOPEE_APP_ID}, Timestamp={timestamp}, Signature={signature}"
+    }
+    
+    try:
+        response = requests.post(url, data=payload, headers=headers, timeout=20)
+        res_json = response.json()
+        
+        if "errors" in res_json:
+            print("❌ Erro da Shopee:", res_json["errors"], flush=True)
+            return []
+            
+        return res_json.get("data", {}).get("productOfferV2", {}).get("nodes", [])
+    except Exception as e:
+        print("❌ Erro de conexão com a Shopee:", e, flush=True)
+        return []
+
+def enviar_mensagem_telegram(texto, imagem_url=None):
+    try:
+        if imagem_url:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto"
+            data = {
+                "chat_id": TELEGRAM_CHANNEL,
+                "photo": imagem_url,
+                "caption": texto,
+                "parse_mode": "Markdown"
+            }
+        else:
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+            data = {
+                "chat_id": TELEGRAM_CHANNEL,
+                "text": texto,
+                "parse_mode": "Markdown"
+            }
+        return requests.post(url, data=data, timeout=20).json()
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+def rodar_bot_24h():
+    global produtos_postados
+    print("🤖 Bot Automático Reiniciado com Proteção Anti-Trava!", flush=True)
+    print(f"⏱️ Ritmo: 1 postagem a cada 2 minutos.\n", flush=True)
+    
+    pagina_atual = 1
+    
+    while True:
+        try:
+            print(f"🔎 Buscando lote de produtos na página {pagina_atual}...", flush=True)
+            produtos = buscar_ofertas_shopee(pagina=pagina_atual)
+            
+            if not produtos:
+                print("⚠️ Fim das páginas ou falha temporária. Reiniciando na página 1 em 30 segundos...", flush=True)
+                pagina_atual = 1
+                time.sleep(30)
+                continue
+                
+            for prod in produtos:
+                item_id = prod.get("itemId")
+                
+                if item_id in produtos_postados:
+                    continue
+                    
+                nome = prod.get("productName", "Produto Imperdível")
+                preco = prod.get("price", "Consulte no link")
+                link = prod.get("offerLink", "")
+                imagem = prod.get("imageUrl", "")
+                
+                mensagem = (
+                    f"🔥 *ACHADINHO BOMBANDO NA SHOPEE!* 🔥\n\n"
+                    f"📦 *Produto:* {nome}\n"
+                    f"💰 *Preço:* R$ {preco}\n\n"
+                    f"👇 *Garanta o seu pelo link oficial:*\n"
+                    f"{link}"
+                )
+                
+                res = enviar_mensagem_telegram(mensagem, imagem)
+                if res.get("ok"):
+                    hora = time.strftime('%H:%M:%S')
+                    print(f"✅ [{hora}] Postado com sucesso: {nome[:30]}...", flush=True)
+                    produtos_postados.add(item_id)
+                    
+                    # Se passar de 5000 produtos guardados, limpa metade para poupar memória
+                    if len(produtos_postados) > 5000:
+                        lista_temp = list(produtos_postados)
+                        produtos_postados = set(lista_temp[2500:])
+                        
+                    print(f"⏳ Aguardando 2 minutos para o próximo produto...\n", flush=True)
+                    time.sleep(TEMPO_ESPERA)
+                else:
+                    print("❌ Erro ao postar no Telegram, tentando novamente em 15s...", flush=True)
+                    time.sleep(15)
+                    
+            pagina_atual += 1
+            
+        except Exception as erro_geral:
+            print(f"⚠️ Ocorreu um pequeno imprevisto: {erro_geral}. Retomando em 10 segundos...", flush=True)
+            time.sleep(10)
+
+if __name__ == "__main__":
+    rodar_bot_24h()
